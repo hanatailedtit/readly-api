@@ -1,16 +1,32 @@
 {
+  "name": "readly-api",
+  "version": "0.1.0",
+  "private": true,
   "repository": "https://github.com/Jii-Yeong/readly-api",
+  "scripts": {
+    "dev": "node \"$(command -v vercel)\" dev --port=3002"
+  },
   "devDependencies": {
     "@types/express": "^5.0.0",
+    "@types/express-fileupload": "^1.5.1",
     "@types/node": "^22.7.6",
-    "@vercel/node": "^2.9.6",
+    "@vercel/node": "^5.5.0",
     "express": "^4.21.1",
     "typescript": "^4.7.3"
   },
   "dependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@vercel/blob": "^0.26.0",
     "@vercel/postgres": "^0.10.0",
+    "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.3",
     "cors": "^2.8.5",
+    "express-fileupload": "^1.5.1",
     "jsonwebtoken": "^9.0.2"
+  },
+  "resolutions": {
+    "@vercel/build-utils": "^15.0.1",
+    "whatwg-url": "^14.0.0",
+    "tr46": "^5.0.0"
   }
 }
