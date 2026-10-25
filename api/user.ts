@@ -1,7 +1,7 @@
 import { del, put } from '@vercel/blob';
-import { sql } from '@vercel/postgres';
 import express, { Request, Response } from 'express';
 import { decodeJwtToken } from '../utils/auth';
+import { sql } from '../utils/sql';
 
 const userRouter = express.Router();
 

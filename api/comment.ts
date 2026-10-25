@@ -1,6 +1,6 @@
-import { sql } from '@vercel/postgres';
 import express, { Request, Response } from 'express';
 import { decodeJwtToken } from '../utils/auth';
+import { sql } from '../utils/sql';
 
 const commentRouter = express.Router();
 
@@ -28,22 +28,17 @@ commentRouter.post('/create', async (req: Request, res: Response) => {
     return;
   }
 
-  const { rows } = await sql`
-  SELECT id, nickname, profile_image 
-  FROM users 
+  const { rowCount } = await sql`
+  INSERT INTO summary_comment (comment, summary_id, comment_id, user_id, user_image, user_name)
+  SELECT ${comment}, ${summaryId}, ${commentId}, id, profile_image, nickname
+  FROM users
   WHERE id = ${decodedInfo.id};`;
 
-  const row = rows[0];
-
-  if (!row) {
+  if (!rowCount) {
     res.status(401).send('There is no user information.');
     return;
   }
 
-  await sql`
-  INSERT INTO summary_comment (comment, summary_id, comment_id, user_id, user_image, user_name)
-  VALUES (${comment}, ${summaryId}, ${commentId}, ${row.id}, ${row.profile_image}, ${row.nickname});
-  `;
   res.send('Success create comment.');
 });
 

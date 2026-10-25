@@ -1,8 +1,7 @@
-import { sql } from '@vercel/postgres';
 import express, { Request, Response } from 'express';
 import { decodeJwtToken } from '../utils/auth';
-import { searchBookList } from '../utils/book';
-import { isExistRows } from '../utils/sql';
+import { getSummaryPagination, searchBookList } from '../utils/book';
+import { sql } from '../utils/sql';
 
 const bookRouter = express.Router();
 
@@ -65,6 +64,10 @@ bookRouter.get('/created-rank', async (req: Request, res: Response) => {
   LIMIT 3;
   `;
 
+  res.setHeader(
+    'Cache-Control',
+    'public, max-age=60, s-maxage=60, stale-while-revalidate=300',
+  );
   res.json(rows);
 });
 
@@ -94,21 +97,9 @@ bookRouter.post('/summary/create', async (req: Request, res: Response) => {
     return;
   }
 
-  const { rows } = await sql`
-  SELECT nickname, profile_image 
-  FROM users 
-  WHERE id = ${decodedInfo.id};`;
-
-  const row = rows[0];
-
-  if (!row) {
-    res.status(401).send('There is no user information.');
-    return;
-  }
-
-  await sql`
+  const { rowCount } = await sql`
   INSERT INTO summaries (contents, book_title, book_author, book_publisher, book_pubdate, book_image, book_link, isbn, user_id, user_name, user_image, start_page, end_page, category_id)
-  VALUES (
+  SELECT
     ${content},
     ${bookInfo.title},
     ${bookInfo.author},
@@ -117,13 +108,19 @@ bookRouter.post('/summary/create', async (req: Request, res: Response) => {
     ${bookInfo.image},
     ${bookInfo.link},
     ${bookInfo.isbn},
-    ${decodedInfo.id},
-    ${row.nickname},
-    ${row.profile_image},
+    id,
+    nickname,
+    profile_image,
     ${startPage},
     ${endPage},
     ${categoryId}
-    );`;
+  FROM users
+  WHERE id = ${decodedInfo.id};`;
+
+  if (!rowCount) {
+    res.status(401).send('There is no user information.');
+    return;
+  }
 
   res.send('success created');
 });
@@ -131,38 +128,37 @@ bookRouter.post('/summary/create', async (req: Request, res: Response) => {
 bookRouter.get('/summary', async (req: Request, res: Response) => {
   const userToken = req.headers['authorization']?.split(' ')[1];
 
-  const decodedInfo = decodeJwtToken(String(userToken));
+  const decodedInfo = decodeJwtToken(userToken || null);
 
   const id = req.query?.id;
 
-  if (!id) {
+  if (!id || Number.isNaN(Number(id))) {
     res.status(401).send('A required parameter is missing.');
     return;
   }
 
-  await sql`
-  UPDATE summaries
-  SET view_count = view_count + 1
-  WHERE id = ${String(id)};`;
-
   const { rows } = await sql`
+  WITH updated_summary AS (
+    UPDATE summaries
+    SET view_count = view_count + 1
+    WHERE id = ${Number(id)}
+    RETURNING *
+  )
   SELECT 
-    summaries.*, 
-    book_category.name AS category_name,
-    users.nickname AS user_name,
-    users.profile_image AS user_image
+    s.*,
+    bc.name AS category_name,
+    u.nickname AS user_name,
+    u.profile_image AS user_image
   FROM 
-    summaries
+    updated_summary s
   LEFT JOIN 
-    users
+    users u
   ON 
-    summaries.user_id = users.id
+    s.user_id = u.id
   LEFT JOIN 
-    book_category
+    book_category bc
   ON 
-    summaries.category_id = book_category.id
-  WHERE
-    summaries.id = ${String(id)};`;
+    s.category_id = bc.id;`;
 
   const row = rows[0];
 
@@ -254,8 +250,12 @@ bookRouter.get('/summary/list', async (req: Request, res: Response) => {
     offset = 0,
   } = req.query;
 
-  const limitNum = Math.max(1, Number(limit) || 16);
-  const offsetNum = Math.max(0, Number(offset) || 0);
+  const pagination = getSummaryPagination(limit, offset);
+  if (!pagination) {
+    res.status(400).send('Invalid pagination parameters.');
+    return;
+  }
+  const { limitNum, offsetNum } = pagination;
 
   const validOrders = ['desc', 'asc', 'view', 'like'] as const;
   type OrderKey = (typeof validOrders)[number];
@@ -301,6 +301,10 @@ bookRouter.get('/summary/list', async (req: Request, res: Response) => {
   let query = '';
 
   if (orderKey === 'like') {
+    const likeCountFilter = whereConditions.length > 0
+      ? `WHERE summary_id IN (SELECT s.id FROM summaries s ${whereClause})`
+      : '';
+
     query = `
     WITH total_info AS (
       SELECT COUNT(*)::int AS total_count
@@ -312,6 +316,7 @@ bookRouter.get('/summary/list', async (req: Request, res: Response) => {
         summary_id,
         COUNT(*)::int AS like_count
       FROM summary_like_count
+      ${likeCountFilter}
       GROUP BY summary_id
     ),
     top_ids AS (
@@ -440,183 +445,166 @@ bookRouter.get('/summary/list', async (req: Request, res: Response) => {
 bookRouter.get('/summary/search', async (req: Request, res: Response) => {
   const { type = 'title', keyword = '', limit = 16, offset = 0 } = req.query;
 
-  const whereByTypeObject = {
-    title: `WHERE book_title ILIKE '%' || $1 || '%'`,
-    author: `WHERE book_author ILIKE '%' || $1 || '%'`,
-    category: `WHERE book_category.name = ANY(SELECT jsonb_array_elements_text($1::jsonb))`,
+  const pagination = getSummaryPagination(limit, offset);
+  if (!pagination) {
+    res.status(400).send('Invalid pagination parameters.');
+    return;
+  }
+  const { limitNum, offsetNum } = pagination;
+
+  const validTypes = ['title', 'author', 'category'] as const;
+  type SearchType = (typeof validTypes)[number];
+  const typeStr = String(type);
+  const searchType: SearchType = (validTypes as readonly string[]).includes(
+    typeStr,
+  )
+    ? (typeStr as SearchType)
+    : 'title';
+
+  let searchParam = String(keyword);
+  if (searchType === 'category') {
+    try {
+      const parsed = JSON.parse(searchParam);
+      searchParam = JSON.stringify(
+        Array.isArray(parsed) ? parsed : [String(parsed)],
+      );
+    } catch {
+      searchParam = searchParam ? JSON.stringify([searchParam]) : '[]';
+    }
+  }
+
+  const whereByTypeMap: Record<SearchType, string> = {
+    title: `WHERE s.book_title ILIKE '%' || $1 || '%'`,
+    author: `WHERE s.book_author ILIKE '%' || $1 || '%'`,
+    category: `WHERE s.category_id IN (
+      SELECT bc_filter.id
+      FROM book_category bc_filter
+      WHERE bc_filter.name = ANY(SELECT jsonb_array_elements_text($1::jsonb))
+    )`,
   };
 
-  let sqlQuery = `
-  WITH
-  comment_counts AS (
-    SELECT
-      summary_id,
-      COUNT(*) AS comment_count
-    FROM
-      summary_comment
-    GROUP BY
-      summary_id
+  const whereClause = whereByTypeMap[searchType];
+
+  const sqlQuery = `
+  WITH total_info AS (
+    SELECT COUNT(*)::int AS total_count
+    FROM summaries s
+    ${whereClause}
   ),
-  like_counts AS (
+  page_summaries AS (
     SELECT
-      summary_id,
-      COUNT(*) AS like_count
-    FROM
-      summary_like_count
-    GROUP BY
-      summary_id
+      s.id,
+      s.contents,
+      s.book_title,
+      s.book_author,
+      s.view_count,
+      s.user_id,
+      s.created_at,
+      s.start_page,
+      s.end_page,
+      s.category_id
+    FROM summaries s
+    ${whereClause}
+    ORDER BY s.created_at DESC
+    LIMIT $2 OFFSET $3
   )
   SELECT
-    summaries.*,
-    book_category.name AS category_name,
-    users.nickname AS user_name,
-    users.profile_image AS user_image,
-    COALESCE(comment_counts.comment_count, 0) AS comment_count,
-    COALESCE(like_counts.like_count, 0) AS like_count
-  FROM
-    summaries
-  LEFT JOIN
-    users
-  ON
-    summaries.user_id = users.id
-  LEFT JOIN
-    book_category
-  ON
-    summaries.category_id = book_category.id
-  LEFT JOIN
-    comment_counts
-  ON
-    summaries.id = comment_counts.summary_id
-  LEFT JOIN
-    like_counts
-  ON
-    summaries.id = like_counts.summary_id
+    ti.total_count,
+    ps.*,
+    bc.name AS category_name,
+    u.nickname AS user_name,
+    u.profile_image AS user_image,
+    (SELECT COUNT(*)::int FROM summary_comment sc WHERE sc.summary_id = ps.id) AS comment_count,
+    (SELECT COUNT(*)::int FROM summary_like_count sl WHERE sl.summary_id = ps.id) AS like_count
+  FROM total_info ti
+  LEFT JOIN page_summaries ps ON TRUE
+  LEFT JOIN users u ON ps.user_id = u.id
+  LEFT JOIN book_category bc ON ps.category_id = bc.id
+  ORDER BY ps.created_at DESC NULLS LAST;
   `;
 
-  sqlQuery += whereByTypeObject[String(type)];
+  const { rows } = await sql.query(sqlQuery, [searchParam, limitNum, offsetNum]);
 
-  sqlQuery += `
-  GROUP BY 
-    summaries.id, 
-    book_category.name, 
-    users.nickname, 
-    users.profile_image,
-    comment_counts.comment_count,
-    like_counts.like_count
-  ORDER BY 
-    created_at DESC
-  LIMIT $2 OFFSET $3;
-  `;
+  const totalCount = Number(rows[0]?.total_count ?? 0);
+  const list =
+    rows.length > 0 && rows[0].id !== null && rows[0].id !== undefined
+      ? rows.map(({ total_count: _totalCount, ...item }) => item)
+      : [];
 
-  const { rows } = await sql.query(sqlQuery, [keyword, limit, offset]);
-
-  let countSqlQuery = `
-  SELECT 
-    COUNT(*),
-    book_category.name AS category_name
-  FROM summaries
-  LEFT JOIN
-    book_category
-  ON
-    summaries.category_id = book_category.id
-  `;
-
-  countSqlQuery += whereByTypeObject[String(type)];
-  countSqlQuery += `
-  GROUP BY
-    book_category.name;
-  `;
-
-  const { rows: total } = await sql.query(countSqlQuery, [keyword]);
-
-  if (total.length <= 0) {
+  if (list.length === 0) {
     res.json({
-      total: 0,
+      total: totalCount,
       list: [],
       nextOffset: null,
     });
     return;
   }
 
-  const totalCount = Number(total[0].count);
-
-  const isOverOffset = totalCount - Number(limit) * (Number(offset) + 1) <= 0;
+  const currentPage = Math.floor(offsetNum / limitNum);
+  const isOverOffset = offsetNum + limitNum >= totalCount;
 
   res.json({
     total: totalCount,
-    list: rows,
-    nextOffset: isOverOffset ? null : Number(offset) + 1,
+    list,
+    nextOffset: isOverOffset ? null : currentPage + 1,
   });
 });
 
 bookRouter.get('/summary/like-count', async (req: Request, res: Response) => {
   const id = req.query?.id;
 
-  if (!id) {
+  if (!id || Number.isNaN(Number(id))) {
     res.status(401).send('A required parameter is missing.');
     return;
   }
 
-  const { rowCount } =
-    await sql`SELECT summary_id FROM summary_like_count WHERE summary_id = ${String(id)};`;
-
   const userToken = req.headers['authorization']?.split(' ')[1];
-
   const decodedInfo = decodeJwtToken(userToken || null);
+  const specUserId = decodedInfo.id || req.ip;
 
-  let specUserId = req.ip;
+  const { rows } = await sql<{ like_count: number; is_clicked: boolean }>`
+    SELECT
+      COUNT(*)::int AS like_count,
+      COALESCE(BOOL_OR(user_id = ${String(specUserId)}), false) AS is_clicked
+    FROM summary_like_count
+    WHERE summary_id = ${Number(id)};`;
 
-  if (decodedInfo.id) {
-    specUserId = decodedInfo.id;
-  }
-
-  const { rows } = await sql`
-    SELECT EXISTS (
-      SELECT 1 
-      FROM summary_like_count 
-      WHERE summary_id = ${String(id)}
-      AND user_id = ${String(specUserId)}
-    );`;
-
-  res.json({ like_count: rowCount, is_clicked: isExistRows(rows) });
+  res.json({
+    like_count: rows[0]?.like_count ?? 0,
+    is_clicked: rows[0]?.is_clicked ?? false,
+  });
 });
 
 bookRouter.post('/summary/click-like', async (req: Request, res: Response) => {
   const userToken = req.headers['authorization']?.split(' ')[1];
-
-  let specUserId = req.ip;
-
   const decodedInfo = decodeJwtToken(userToken || null);
-
-  if (decodedInfo.id) {
-    specUserId = decodedInfo.id;
-  }
+  const specUserId = decodedInfo.id || req.ip;
 
   const id = req.body?.id;
 
-  if (!id) {
+  if (!id || Number.isNaN(Number(id))) {
     res.status(401).send('A required parameter is missing.');
     return;
   }
 
-  const { rows } = await sql`
-  SELECT EXISTS (
-    SELECT 1 
-    FROM summary_like_count 
-    WHERE summary_id = ${id}
-    AND user_id = ${specUserId}
-  );`;
+  const { rows } = await sql<{ was_deleted: boolean }>`
+  WITH deleted AS (
+    DELETE FROM summary_like_count
+    WHERE summary_id = ${Number(id)}
+      AND user_id = ${String(specUserId)}
+    RETURNING id
+  ),
+  inserted AS (
+    INSERT INTO summary_like_count (summary_id, user_id)
+    SELECT ${Number(id)}, ${String(specUserId)}
+    WHERE NOT EXISTS (SELECT 1 FROM deleted)
+    RETURNING id
+  )
+  SELECT EXISTS (SELECT 1 FROM deleted) AS was_deleted;`;
 
-  if (isExistRows(rows)) {
-    await sql`
-    DELETE FROM summary_like_count 
-    WHERE summary_id = ${id} 
-    AND user_id = ${specUserId};`;
+  if (rows[0]?.was_deleted) {
     res.send('delete like count.');
   } else {
-    await sql`
-    INSERT INTO summary_like_count (summary_id, user_id) 
-    VALUES (${id}, ${specUserId});`;
     res.send('insert like count.');
   }
 });
@@ -638,6 +626,10 @@ bookRouter.get('/category-list', async (req: Request, res: Response) => {
   ORDER BY 
     summary_count DESC;`;
 
+  res.setHeader(
+    'Cache-Control',
+    'public, max-age=60, s-maxage=60, stale-while-revalidate=300',
+  );
   res.json(rows);
 });
 

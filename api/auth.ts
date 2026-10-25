@@ -1,4 +1,3 @@
-import { sql } from '@vercel/postgres';
 import bcrypt from 'bcryptjs';
 import express, { Request, Response } from 'express';
 import {
@@ -6,7 +5,7 @@ import {
   getGoogleTokenByCode,
   getGoogleUserInfo,
 } from '../utils/auth';
-import { isExistRows } from '../utils/sql';
+import { isExistRows, sql } from '../utils/sql';
 
 const authRouter = express.Router();
 
@@ -133,23 +132,12 @@ authRouter.post('/login/google', async (req: Request, res: Response) => {
 
   const accessToken = generateJwtToken({ id: userInfo.id });
 
-  const { rows } = await sql`
-  SELECT EXISTS (
-    SELECT 1 
-    FROM users 
-    WHERE id = ${userInfo.id}
-  );`;
-
-  if (isExistRows(rows)) {
-    res.send({ message: 'login success', accessToken });
-    return;
-  }
-
-  await sql`
+  const { rowCount } = await sql`
   INSERT INTO users 
     (id, email, nickname) 
-  VALUES (${userInfo.id}, ${userInfo.email}, ${userInfo.name});`;
-  res.send({ message: 'regist user', accessToken });
+  VALUES (${userInfo.id}, ${userInfo.email}, ${userInfo.name})
+  ON CONFLICT (id) DO NOTHING;`;
+  res.send({ message: rowCount ? 'regist user' : 'login success', accessToken });
 });
 
 export default authRouter;
