@@ -21,7 +21,7 @@
   },
   "dependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "@vercel/blob": "^0.26.0",
+    "@vercel/blob": "^2.8.2",
     "bcryptjs": "^2.4.3",
     "body-parser": "^1.20.9",
     "cors": "^2.8.5",

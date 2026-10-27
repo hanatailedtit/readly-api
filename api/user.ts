@@ -87,45 +87,71 @@ userRouter.post('/edit/profile-image', async (req: Request, res: Response) => {
 
   const decodedInfo = decodeJwtToken(userToken);
 
-  const { rows } =
-    await sql`SELECT profile_image FROM users WHERE id = ${decodedInfo.id}`;
-
-  if (!rows || rows.length <= 0) {
-    res.status(401).send('User does not exist.');
+  if (!decodedInfo.id) {
+    res.status(401).send('Decoding failed.');
     return;
   }
 
-  const row = rows[0];
-
-  if (row.profile_image) {
-    await del(row.profile_image);
-  }
-
   let image = req.files?.image;
+  if (Array.isArray(image)) image = image[0];
 
   if (!image) {
     res.status(400).send('A required parameter is missing.');
     return;
   }
 
-  if (Array.isArray(image)) {
-    image = image[0];
+  if (!['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(image.mimetype)) {
+    res.status(400).send('Unsupported image type.');
+    return;
   }
 
-  const blob = await put(
-    `readly/user/profile-image/${image.name}`,
-    image.data,
-    {
-      access: 'public',
-    },
-  );
+  if (!image.size || image.truncated || image.size > 5 * 1024 * 1024) {
+    res.status(400).send('Image must be non-empty and no larger than 5 MB.');
+    return;
+  }
 
-  await sql`
-  UPDATE users
-  SET profile_image = ${blob.url}
-  WHERE id = ${decodedInfo.id};`;
+  try {
+    const { rows } =
+      await sql`SELECT profile_image FROM users WHERE id = ${decodedInfo.id}`;
 
-  res.send('Success edited.');
+    const row = rows[0];
+    if (!row) {
+      res.status(401).send('User does not exist.');
+      return;
+    }
+
+    const blob = await put(
+      `readly/user/profile-image/${image.name}`,
+      image.data,
+      {
+        access: 'public',
+        contentType: image.mimetype,
+        addRandomSuffix: true,
+        abortSignal: AbortSignal.timeout(10000),
+      },
+    );
+
+    const { rowCount } = await sql`
+    UPDATE users
+    SET profile_image = ${blob.url}
+    WHERE id = ${decodedInfo.id};`;
+
+    // shortcut: an unsuccessful DB save may leave an unused upload; clean up in a background job if these accumulate.
+    if (!rowCount) throw new Error('User no longer exists.');
+
+    try {
+      if (row.profile_image && new URL(row.profile_image).hostname === new URL(blob.url).hostname) {
+        await del(row.profile_image, { abortSignal: AbortSignal.timeout(3000) });
+      }
+    } catch (error) {
+      console.warn('Previous profile image cleanup failed:', error instanceof Error ? error.message : 'Unknown error');
+    }
+
+    res.send('Success edited.');
+  } catch (error) {
+    console.error('Profile image save failed:', error instanceof Error ? error.message : 'Unknown error');
+    res.status(500).json({ error: 'Failed to save profile image.' });
+  }
 });
 
 export default userRouter;
