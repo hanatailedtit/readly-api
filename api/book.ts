@@ -77,15 +77,45 @@ bookRouter.post('/list', handleNLBookList);
 bookRouter.get('/all', handleNLBookList);
 bookRouter.get('/nl-list', handleNLBookList);
 
-bookRouter.post('/search', async (req: Request, res: Response) => {
-  const query = req.body?.query || '';
-  const display = req.body?.display || 10;
-  const start = req.body?.start || 1;
-  const sort = req.body?.sort || 'sim';
-  const searchResult = await searchBookList({ query, display, start, sort });
+const handleBookSearch = async (req: Request, res: Response) => {
+  const query = (req.body?.query || req.query?.query || '') as string;
+  const display = req.body?.display || req.query?.display || req.body?.size || req.query?.size || 10;
+  const start = req.body?.start || req.query?.start || 1;
+  const sort = (req.body?.sort || req.query?.sort || 'accuracy') as
+    | 'sim'
+    | 'date'
+    | 'accuracy'
+    | 'latest';
+  const page = req.body?.page || req.query?.page;
+  const target = (req.body?.target || req.query?.target) as
+    | 'title'
+    | 'isbn'
+    | 'publisher'
+    | 'person'
+    | undefined;
 
-  res.json(searchResult);
-});
+  try {
+    const searchResult = await searchBookList({
+      query,
+      display,
+      start,
+      sort,
+      page,
+      target,
+    });
+
+    res.json(searchResult);
+  } catch (error: any) {
+    if (error?.message?.includes('KAKAO_REST_API_KEY')) {
+      res.status(500).json({ error: 'KAKAO_REST_API_KEY가 환경 변수에 설정되어 있지 않습니다.' });
+      return;
+    }
+    res.status(500).json({ error: error?.message || '카카오 책 검색 API 호출에 실패했습니다.' });
+  }
+};
+
+bookRouter.post('/search', handleBookSearch);
+bookRouter.get('/search', handleBookSearch);
 
 bookRouter.get('/recent', async (req: Request, res: Response) => {
   const userToken = req.headers['authorization']?.split(' ')[1];

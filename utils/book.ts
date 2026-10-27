@@ -1,4 +1,8 @@
-import { BookSearchParameterType, NLBookListParameterType } from "../model/book"
+import {
+  BookSearchParameterType,
+  KakaoBookResponse,
+  NLBookListParameterType,
+} from "../model/book";
 
 export const getSummaryPagination = (limit: unknown, offset: unknown) => {
   if (
@@ -22,19 +26,85 @@ export const getSummaryPagination = (limit: unknown, offset: unknown) => {
   return { limitNum: Math.min(limitNum, 100), offsetNum };
 };
 
-export const searchBookList = async (query: BookSearchParameterType) => {
-  const queryString = new URLSearchParams(query).toString()
-  const apiUrl = `https://openapi.naver.com/v1/search/book.json?${queryString}`
+export const searchBookList = async (params: BookSearchParameterType) => {
+  const apiKey = process.env.KAKAO_REST_API_KEY;
+  if (!apiKey) {
+    throw new Error('KAKAO_REST_API_KEY is not configured.');
+  }
 
-  const data = await fetch(apiUrl, {
+  const query = params.query || '';
+  const display = Number(params.display || params.size || 10);
+  const size = Math.min(Math.max(display, 1), 50);
+
+  let page = 1;
+  if (params.page) {
+    page = Number(params.page);
+  } else if (params.start) {
+    const start = Number(params.start);
+    page = Math.floor((Math.max(start, 1) - 1) / size) + 1;
+  }
+  page = Math.min(Math.max(page, 1), 50);
+
+  let sort = 'accuracy';
+  if (params.sort === 'date' || params.sort === 'latest') {
+    sort = 'latest';
+  }
+
+  const queryParams = new URLSearchParams({
+    query,
+    page: String(page),
+    size: String(size),
+    sort,
+  });
+
+  if (params.target) {
+    queryParams.set('target', params.target);
+  }
+
+  const apiUrl = `https://dapi.kakao.com/v3/search/book?${queryParams.toString()}`;
+
+  const response = await fetch(apiUrl, {
     headers: {
-      'X-Naver-Client-Id': String(process.env.NAVER_CLIENT_ID),
-      'X-Naver-Client-Secret': String(process.env.NAVER_CLIENT_SECRET)
-    }
-  })
+      Authorization: `KakaoAK ${apiKey}`,
+    },
+  });
 
-  return data.json()
-}
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Kakao Book API error: ${response.status} ${response.statusText} - ${errorBody}`);
+  }
+
+  const data: KakaoBookResponse = await response.json();
+
+  const items = (data.documents || []).map((doc) => {
+    const isbns = (doc.isbn || '').trim().split(/\s+/);
+    const isbn13 = isbns.find((s) => s.length === 13) || isbns[0] || '';
+    const pubdate = doc.datetime ? doc.datetime.slice(0, 10).replace(/-/g, '') : '';
+
+    return {
+      title: doc.title || '',
+      link: doc.url || '',
+      image: doc.thumbnail || '',
+      author: Array.isArray(doc.authors) ? doc.authors.join(', ') : (doc.authors || ''),
+      discount: doc.sale_price > 0 ? String(doc.sale_price) : '',
+      publisher: doc.publisher || '',
+      pubdate,
+      isbn: isbn13,
+      description: doc.contents || '',
+      price: String(doc.price || ''),
+    };
+  });
+
+  return {
+    lastBuildDate: new Date().toUTCString(),
+    total: data.meta?.total_count || 0,
+    start: (page - 1) * size + 1,
+    display: size,
+    items,
+    meta: data.meta,
+    documents: data.documents,
+  };
+};
 
 export const fetchNLBookList = async (params?: NLBookListParameterType) => {
   const apiKey = process.env.NL_ISBN_API_KEY;

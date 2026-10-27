@@ -1,9 +1,39 @@
 export type BookSearchParameterType = {
   query: string;
-  display?: string;
-  start?: string;
-  sort?: 'sim' | 'date';
+  display?: string | number;
+  start?: string | number;
+  sort?: 'sim' | 'date' | 'accuracy' | 'latest';
+  page?: string | number;
+  size?: string | number;
+  target?: 'title' | 'isbn' | 'publisher' | 'person';
 };
+
+export type KakaoBookDocument = {
+  title: string;
+  contents: string;
+  url: string;
+  isbn: string;
+  datetime: string;
+  authors: string[];
+  publisher: string;
+  translators: string[];
+  price: number;
+  sale_price: number;
+  thumbnail: string;
+  status: string;
+};
+
+export type KakaoBookMeta = {
+  is_end: boolean;
+  pageable_count: number;
+  total_count: number;
+};
+
+export type KakaoBookResponse = {
+  documents: KakaoBookDocument[];
+  meta: KakaoBookMeta;
+};
+
 
 export type NLBookListParameterType = {
   page_no?: number | string;
