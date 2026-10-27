@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
-const { test, beforeEach, afterEach } = require('node:test');
+const { test, afterEach } = require('node:test');
 const ts = require('typescript');
 
 if (!require.extensions['.ts']) {
@@ -36,7 +36,8 @@ const originalKey = process.env.NL_ISBN_API_KEY;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  process.env.NL_ISBN_API_KEY = originalKey;
+  if (originalKey === undefined) delete process.env.NL_ISBN_API_KEY;
+  else process.env.NL_ISBN_API_KEY = originalKey;
 });
 
 test('/book/list returns 500 when NL_ISBN_API_KEY is missing', async () => {
@@ -67,7 +68,7 @@ test('/book/list maps docs to items on success', async () => {
             TITLE_URL: 'https://example.com/cover.jpg',
             EA_ISBN: '9788900000001',
             SERIES_TITLE: '시리즈',
-            PRICE: '15000',
+            PRE_PRICE: '15000',
             PAGE: '250',
             FORM: '종이책',
             DEPOSIT_YN: 'Y',
@@ -144,6 +145,49 @@ test('/book/list handles National Library error response', async () => {
   });
 
   const res = await request(bookRouter, '/list', { method: 'GET' });
-  assert.equal(res.statusCode, 400);
-  assert.equal(res.body.ERR_CODE, '011');
+  assert.equal(res.statusCode, 502);
+  assert.equal(res.body.error, 'Invalid National Library response.');
+});
+
+test('invalid pagination and filters return 400 without sending requests', async () => {
+  process.env.NL_ISBN_API_KEY = 'mock-key';
+  globalThis.fetch = async () => { assert.fail('Unexpected provider call'); };
+  for (const query of [{ page_no: 0 }, { page_no: 'Infinity' }, { page_size: -1 },
+    { page_size: 101 }, { page_size: [] }, { title: {} }, { author: ['a', 'b'] },
+    { start_publish_date: '20260231' }, { end_publish_date: 'invalid' },
+    { start_publish_date: '20260102', end_publish_date: '20260101' },
+    { start_publish_date: ' 20260102 ', end_publish_date: '20260101' }, { deposit_yn: 'invalid' }]) {
+    assert.equal((await request(bookRouter, '/list', { query })).statusCode, 400);
+  }
+});
+
+test('malformed responses and HTTP failures return safe 502 responses', async () => {
+  process.env.NL_ISBN_API_KEY = 'mock-key';
+  for (const reply of [
+    async () => new Response('secret-provider-detail', { status: 500 }),
+    async () => Response.json({ unexpected: true }),
+    async () => Response.json({ TOTAL_COUNT: 'NaN', docs: [] }),
+    async () => Response.json({ TOTAL_COUNT: null, docs: [] }),
+    async () => Response.json({ PAGE_NO: -1, TOTAL_COUNT: '0', docs: [] }),
+    async () => { throw new DOMException('Timeout', 'TimeoutError'); },
+  ]) {
+    globalThis.fetch = reply;
+    const res = await request(bookRouter, '/list');
+    assert.equal(res.statusCode, 502);
+    assert.ok(!JSON.stringify(res.body).includes('secret'));
+  }
+});
+
+test('valid filters are bound to the fixed endpoint and requests have a timeout', async () => {
+  process.env.NL_ISBN_API_KEY = 'mock-key';
+  globalThis.fetch = async (url, options) => {
+    const parsed = new URL(url);
+    assert.equal(parsed.origin, 'https://www.nl.go.kr');
+    assert.equal(parsed.searchParams.get('title'), 'Book & title');
+    assert.equal(parsed.searchParams.get('deposit_yn'), 'Y');
+    assert.ok(options.signal instanceof AbortSignal);
+    return Response.json({ PAGE_NO: '1', TOTAL_COUNT: '0', docs: [] });
+  };
+  const res = await request(bookRouter, '/list', { query: { title: 'Book & title', deposit_yn: 'Y', start_publish_date: '20240229' } });
+  assert.equal(res.statusCode, 200);
 });

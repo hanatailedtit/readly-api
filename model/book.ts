@@ -62,6 +62,8 @@ export type NLBookDocType = {
   INPUT_DATE?: string;
   PAGE?: string;
   PRICE?: string;
+  PRE_PRICE?: string;
+  REAL_PRICE?: string;
   FORM?: string;
   CIP_YN?: string;
   DEPOSIT_YN?: string;
@@ -69,15 +71,9 @@ export type NLBookDocType = {
   [key: string]: unknown;
 };
 
-export type NLBookItemType = {
-  title: string;
-  author: string;
-  publisher: string;
-  pubdate: string;
-  image: string;
-  isbn: string;
-  seriesTitle?: string;
-  price?: string;
-  page?: string;
-  form?: string;
+export type NLBookListResponse = {
+  PAGE_NO?: string | number;
+  TOTAL_COUNT: string | number;
+  docs: NLBookDocType[];
+  [key: string]: unknown;
 };

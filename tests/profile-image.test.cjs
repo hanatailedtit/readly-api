@@ -66,7 +66,7 @@ async function request(options = {}) {
     send(body) { this.body = body; return this; },
     json(body) { this.body = body; return this; },
   };
-  const route = router.stack.find(({ route }) => route?.path === '/edit/profile-image').route;
+  const route = router.stack.find(({ route }) => route?.path === (options.path || '/edit/profile-image')).route;
   await route.stack[0].handle({
     headers: { authorization: `Bearer ${generateJwtToken({ id: 'profile-user' })}` },
     files: { image }, ...options,
@@ -79,6 +79,17 @@ test('old image is deleted only after the replacement is uploaded and saved', as
   assert.equal(response.statusCode, 200);
   assert.equal(response.body, 'Success edited.');
   assert.deepEqual(events, ['read', 'upload', 'update', 'delete']);
+});
+
+test('user info responses never expose stored password hashes', async () => {
+  rows = [{ id: 'profile-user', nickname: 'Reader', profile_image: oldUrl, password: 'private-password-hash' }];
+  for (const path of ['/my-info', '/info']) {
+    const response = await request({ path, query: { user_id: 'profile-user' } });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.nickname, 'Reader');
+    assert.equal(Object.hasOwn(response.body, 'password'), false);
+    assert.ok(!JSON.stringify(response.body).includes('private-password-hash'));
+  }
 });
 
 test('missing or invalid authentication cannot query or change profile images', async () => {

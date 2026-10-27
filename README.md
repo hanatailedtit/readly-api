@@ -2,12 +2,20 @@
 
 ## 로컬 실행
 
-Node.js 22 환경에서 `yarn dev`를 실행합니다. API 주소는 `http://localhost:3002`입니다.
+Node.js 24 환경에서 `yarn dev`를 실행합니다. API 주소는 `http://localhost:3002`입니다.
 Vercel CLI가 설치되어 있어야 하며, 개발 스크립트는 현재 터미널의 Node.js로 CLI를 실행합니다.
 Homebrew의 Vercel 실행 파일에 고정된 Node.js 버전과 프로젝트 버전이 달라 발생하는 시작 오류를 방지합니다.
 
 ## 소개
 이 프로젝트는 express로 구현된 Readly 서비스의 백엔드 프로젝트 입니다.
+
+## 클라이언트와 외부 도서 API
+
+- 운영 프론트엔드 `https://readly-steel.vercel.app`와 로컬 개발 주소는 `api/index.ts`의 허용 목록을 따릅니다. 추가 프론트엔드 도메인은 `CLIENT_URL`에 정확한 Origin을 설정합니다. 다른 하위 도메인은 자동 허용하지 않습니다.
+- 카카오 검색 `GET/POST /book/search`는 `query`가 필수입니다. `display`(또는 `size`)는 기본 10, 최대 100이고 `start`는 1부터 시작하는 행 위치(최대 2500)입니다. `page`를 쓰면 1~50 페이지와 최대 50의 페이지 크기를 사용합니다. 요청 범위가 카카오 페이지를 걸치면 결과를 합쳐 필요한 행만 반환합니다.
+- 국립중앙도서관 `GET/POST /book/list`는 기본 20건, 최대 100건을 페이지별로 조회합니다. `page_no`는 1부터 시작합니다. `/book/all`, `/book/nl-list`는 같은 GET 핸들러를 사용하며 전체 DB를 한 번에 반환하지 않습니다.
+- 잘못된 입력은 HTTP 400, 키 미설정은 500, 외부 HTTP·JSON·응답 형식·10초 타임아웃 오류는 502입니다. 외부 오류 본문이나 인증키가 포함될 수 있는 예외 내용은 클라이언트에 반환하지 않습니다.
+- 국립중앙도서관 가격은 `REAL_PRICE`, `PRE_PRICE` 순서로 사용합니다. `PUBLISH_PREDATE`는 발행예정일이며 이미지 등 서지정보가 비어 있을 수 있습니다.
 
 ## 프로필 이미지 저장
 

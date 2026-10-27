@@ -27,7 +27,8 @@ userRouter.get('/my-info', async (req: Request, res: Response) => {
     return;
   }
 
-  res.json(row);
+  const { password: _password, ...user } = row;
+  res.json(user);
 });
 
 userRouter.get('/info', async (req: Request, res: Response) => {
@@ -54,7 +55,8 @@ userRouter.get('/info', async (req: Request, res: Response) => {
     return;
   }
 
-  res.json({ ...row, is_my: userId === decodedInfo.id });
+  const { password: _password, ...user } = row;
+  res.json({ ...user, is_my: userId === decodedInfo.id });
 });
 
 userRouter.put('/edit/nickname', async (req: Request, res: Response) => {

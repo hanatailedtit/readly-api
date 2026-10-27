@@ -15,15 +15,13 @@ const allowedOrigins = [
   'http://localhost:3001',
   'http://localhost:3002',
   'http://127.0.0.1:3000',
+  'https://readly-steel.vercel.app',
   'https://readlyapi.createdoodle.dev',
 ].filter(Boolean) as string[];
 
 const corsOptions: cors.CorsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.createdoodle.dev')) {
-      return callback(null, true);
-    }
-    return callback(null, true);
+    callback(null, !origin || allowedOrigins.includes(origin));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
