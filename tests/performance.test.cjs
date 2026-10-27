@@ -128,6 +128,7 @@ for (const [router, path, body, success] of [
 
 test('Google login uses one insert for both new and existing users', async (t) => {
   t.mock.method(globalThis, 'fetch', async (url) => ({
+    ok: true,
     json: async () => url.includes('/token')
       ? { access_token: 'google-token' }
       : { id: 'google-user', email: 'test@example.com', name: 'Tester' },
@@ -138,7 +139,94 @@ test('Google login uses one insert for both new and existing users', async (t) =
     const response = await request(authRouter, '/login/google', { body: { code: 'code' } });
     assert.equal(calls.length, 1);
     assert.match(calls[0].text, /ON CONFLICT \(id\) DO NOTHING/);
+    assert.deepEqual(calls[0].values, ['google-user', 'test@example.com', 'Tester']);
+    assert.equal(response.statusCode, 200);
     assert.equal(response.body.message, rowCount ? 'regist user' : 'login success');
     assert.equal(typeof response.body.accessToken, 'string');
   }
+});
+
+test('Google login rejects invalid codes before contacting Google or the DB', async (t) => {
+  const fetch = t.mock.method(globalThis, 'fetch');
+  for (const body of [undefined, {}, { code: '' }, { code: ' ' }, { code: 123 }, { code: ['code'] }]) {
+    const response = await request(authRouter, '/login/google', { body });
+    assert.equal(response.statusCode, 400);
+    assert.ok(response.body.error);
+  }
+  assert.equal(fetch.mock.callCount(), 0);
+  assert.equal(calls.length, 0);
+});
+
+for (const [stage, ok, data, status] of [
+  ['token', false, { error: 'invalid_grant', access_token: 'must-not-be-used' }, 401],
+  ['token', true, { error: 'invalid_client' }, 401],
+  ['token', true, null, 401],
+  ['token', true, { access_token: ' ' }, 401],
+  ['token', true, { access_token: 123 }, 401],
+  ['userinfo', false, { error: 'invalid_token', id: 'must-not-be-used' }, 502],
+  ['userinfo', true, { error: 'invalid_token' }, 502],
+  ['userinfo', true, null, 502],
+  ['userinfo', true, { id: ' ' }, 502],
+  ['userinfo', true, { id: 123 }, 502],
+]) {
+  test(`Google login rejects ${stage} response ${JSON.stringify(data)} (HTTP ok=${ok})`, async (t) => {
+    const fetch = t.mock.method(globalThis, 'fetch', async (url) => ({
+      ok: url.includes('/token') && stage === 'userinfo' ? true : ok,
+      json: async () => url.includes('/token') && stage === 'userinfo'
+        ? { access_token: 'google-token' } : data,
+    }));
+    const response = await request(authRouter, '/login/google', { body: { code: 'code' } });
+    assert.equal(response.statusCode, status);
+    assert.ok(response.body.error);
+    assert.equal(response.body.accessToken, undefined);
+    assert.equal(calls.length, 0);
+    assert.equal(fetch.mock.callCount(), stage === 'token' ? 1 : 2);
+  });
+}
+
+for (const stage of ['token', 'userinfo']) {
+  for (const failure of ['network', 'json', 'timeout']) {
+    test(`Google login responds when ${stage} fails during ${failure}`, async (t) => {
+      t.mock.method(console, 'error', () => {});
+      if (failure === 'timeout') {
+        let count = 0;
+        t.mock.method(AbortSignal, 'timeout', (milliseconds) => {
+          assert.equal(milliseconds, 3000);
+          count++;
+          return stage === 'token' || count === 2
+            ? AbortSignal.abort(new DOMException('upstream timed out', 'TimeoutError'))
+            : new AbortController().signal;
+        });
+      }
+      t.mock.method(globalThis, 'fetch', async (url, options) => {
+        if (url.includes('/token') && stage === 'userinfo') {
+          return { ok: true, json: async () => ({ access_token: 'google-token' }) };
+        }
+        if (failure === 'timeout') options.signal.throwIfAborted();
+        if (failure === 'network') throw new Error('private upstream details');
+        return { ok: true, json: async () => { throw new SyntaxError('private upstream details'); } };
+      });
+      const response = await request(authRouter, '/login/google', { body: { code: 'code' } });
+      assert.equal(response.statusCode, 500);
+      assert.deepEqual(response.body, { error: 'Google login failed.' });
+      assert.equal(calls.length, 0);
+    });
+  }
+}
+
+test('Google login responds to DB failures without returning a JWT or database details', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  t.mock.method(globalThis, 'fetch', async (url) => ({
+    ok: true,
+    json: async () => url.includes('/token')
+      ? { access_token: 'google-token' }
+      : { id: 'google-user', email: 'test@example.com', name: 'Tester' },
+  }));
+  const query = t.mock.method(globalThis.__readlyPgPool, 'query', async () => {
+    throw new Error('private database details');
+  });
+  const response = await request(authRouter, '/login/google', { body: { code: 'code' } });
+  assert.equal(query.mock.callCount(), 1);
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, { error: 'Google login failed.' });
 });

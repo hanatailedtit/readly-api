@@ -119,25 +119,40 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 });
 
 authRouter.post('/login/google', async (req: Request, res: Response) => {
-  const code = req.body.code;
+  const code = req.body?.code;
 
-  const token = await getGoogleTokenByCode(code);
-
-  if (!token) {
-    res.send('login failed');
+  if (typeof code !== 'string' || !code.trim()) {
+    res.status(400).json({ error: 'A valid authorization code is required.' });
     return;
   }
 
-  const userInfo = await getGoogleUserInfo(token.access_token);
+  try {
+    const token = await getGoogleTokenByCode(code);
 
-  const accessToken = generateJwtToken({ id: userInfo.id });
+    if (!token) {
+      res.status(401).json({ error: 'Google authentication failed.' });
+      return;
+    }
 
-  const { rowCount } = await sql`
-  INSERT INTO users 
-    (id, email, nickname) 
-  VALUES (${userInfo.id}, ${userInfo.email}, ${userInfo.name})
-  ON CONFLICT (id) DO NOTHING;`;
-  res.send({ message: rowCount ? 'regist user' : 'login success', accessToken });
+    const userInfo = await getGoogleUserInfo(token.access_token);
+
+    if (!userInfo) {
+      res.status(502).json({ error: 'Failed to retrieve Google user information.' });
+      return;
+    }
+
+    const accessToken = generateJwtToken({ id: userInfo.id });
+
+    const { rowCount } = await sql`
+    INSERT INTO users
+      (id, email, nickname)
+    VALUES (${userInfo.id}, ${userInfo.email}, ${userInfo.name})
+    ON CONFLICT (id) DO NOTHING;`;
+    res.send({ message: rowCount ? 'regist user' : 'login success', accessToken });
+  } catch (error) {
+    console.error('Google login failed:', error);
+    res.status(500).json({ error: 'Google login failed.' });
+  }
 });
 
 export default authRouter;
