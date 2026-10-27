@@ -1,9 +1,81 @@
 import express, { Request, Response } from 'express';
 import { decodeJwtToken } from '../utils/auth';
-import { getSummaryPagination, searchBookList } from '../utils/book';
+import { fetchNLBookList, getSummaryPagination, searchBookList } from '../utils/book';
 import { sql } from '../utils/sql';
 
 const bookRouter = express.Router();
+
+const handleNLBookList = async (req: Request, res: Response) => {
+  const page_no = req.query?.page_no || req.body?.page_no || req.query?.page || req.body?.page || 1;
+  const page_size =
+    req.query?.page_size ||
+    req.body?.page_size ||
+    req.query?.display ||
+    req.body?.display ||
+    req.query?.limit ||
+    req.body?.limit ||
+    20;
+  const isbn = (req.query?.isbn || req.body?.isbn) as string | undefined;
+  const title = (req.query?.title || req.body?.title || req.query?.query || req.body?.query) as string | undefined;
+  const author = (req.query?.author || req.body?.author) as string | undefined;
+  const publisher = (req.query?.publisher || req.body?.publisher) as string | undefined;
+  const start_publish_date = (req.query?.start_publish_date || req.body?.start_publish_date) as string | undefined;
+  const end_publish_date = (req.query?.end_publish_date || req.body?.end_publish_date) as string | undefined;
+  const deposit_yn = (req.query?.deposit_yn || req.body?.deposit_yn) as string | undefined;
+
+  try {
+    const rawData = await fetchNLBookList({
+      page_no,
+      page_size,
+      isbn,
+      title,
+      author,
+      publisher,
+      start_publish_date,
+      end_publish_date,
+      deposit_yn,
+    });
+
+    if (rawData?.RESULT === 'ERROR') {
+      res.status(400).json(rawData);
+      return;
+    }
+
+    const docs = Array.isArray(rawData?.docs) ? rawData.docs : [];
+    const items = docs.map((doc: any) => ({
+      title: doc.TITLE || '',
+      author: doc.AUTHOR || '',
+      publisher: doc.PUBLISHER || '',
+      pubdate: doc.PUBLISH_PREDATE || '',
+      image: doc.TITLE_URL || '',
+      isbn: doc.EA_ISBN || doc.SET_ISBN || '',
+      seriesTitle: doc.SERIES_TITLE || '',
+      price: doc.PRICE || '',
+      page: doc.PAGE || '',
+      form: doc.FORM || '',
+      depositYn: doc.DEPOSIT_YN || '',
+    }));
+
+    res.json({
+      ...rawData,
+      page_no: Number(rawData?.PAGE_NO || page_no),
+      page_size: Number(page_size),
+      total_count: Number(rawData?.TOTAL_COUNT || 0),
+      items,
+    });
+  } catch (error: any) {
+    if (error?.message === 'NL_ISBN_API_KEY is not configured.') {
+      res.status(500).json({ error: 'NL_ISBN_API_KEY가 환경 변수에 설정되어 있지 않습니다.' });
+      return;
+    }
+    res.status(500).json({ error: error?.message || '국립중앙도서관 API 호출에 실패했습니다.' });
+  }
+};
+
+bookRouter.get('/list', handleNLBookList);
+bookRouter.post('/list', handleNLBookList);
+bookRouter.get('/all', handleNLBookList);
+bookRouter.get('/nl-list', handleNLBookList);
 
 bookRouter.post('/search', async (req: Request, res: Response) => {
   const query = req.body?.query || '';
