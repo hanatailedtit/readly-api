@@ -42,6 +42,40 @@ commentRouter.post('/create', async (req: Request, res: Response) => {
   res.send('Success create comment.');
 });
 
+commentRouter.put('/edit', async (req: Request, res: Response) => {
+  const userToken = req.headers.authorization?.split(' ')[1];
+  const decodedInfo = decodeJwtToken(userToken || null);
+
+  if (!decodedInfo?.id) {
+    res.status(401).send('Authentication required.');
+    return;
+  }
+
+  const id = req.body?.id;
+  const comment = req.body?.comment;
+  if (!Number.isSafeInteger(id) || id <= 0 ||
+      typeof comment !== 'string' || !comment.trim()) {
+    res.status(400).send('A valid comment ID and non-empty comment are required.');
+    return;
+  }
+
+  try {
+    const { rowCount } = await sql`
+      UPDATE summary_comment
+      SET comment = ${comment.trim()}
+      WHERE id = ${id} AND user_id = ${decodedInfo.id};`;
+
+    if (!rowCount) {
+      res.status(404).send('Comment does not exist or is not yours.');
+      return;
+    }
+
+    res.send('Success edited.');
+  } catch {
+    res.status(500).json({ error: 'Failed to edit comment.' });
+  }
+});
+
 commentRouter.get('/list', async (req: Request, res: Response) => {
   const summaryId = req.query?.summary_id;
   const userToken = req.headers['authorization']?.split(' ')[1];
